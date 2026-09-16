@@ -1,55 +1,5 @@
 #!/usr/bin/env python3
-"""
-CanSat Ground Control System - live 3D telemetry tracker
-========================================================
-
-Reads telemetry from an XBee3 over a serial link (Digi XBee Python library),
-decodes it to a string, validates it, logs it, and plots latitude / longitude /
-altitude live on a 3D graph.
-
-Expected packet (one per line, comma separated, '\\n' terminated):
-
-    Timestamp(int), State(int), Temperature(float), Pressure(float),
-    Altitude(float), Battery Voltage(float), Battery Current(float),
-    Latitude(float), Longitude(float), Prev_CMD_echo(str)
-
-Design notes
-------------
-* The XBee callback runs on the library's reader thread, so it does the
-  absolute minimum: decode bytes -> reassemble lines -> push onto a Queue.
-  All parsing and every matplotlib call happen on the main thread, because
-  matplotlib is not thread safe. This is what keeps the GUI from deadlocking
-  when packets arrive at a high rate.
-* RF frames do not respect line boundaries: one packet can arrive split over
-  two frames, and two packets can arrive in one frame. LineAssembler stitches
-  the byte stream back into whole lines before anything tries to parse it.
-* A corrupted packet must never kill the ground station during a flight, so
-  every line is validated (field count, types, physical ranges) and bad ones
-  are counted and dropped instead of raising.
-* Everything received is written to disk immediately (raw + parsed CSV) so a
-  flight can be replayed and scored afterwards.
-
-Usage
------
-    # No hardware needed - simulated flight, good for a demo:
-    python gcs.py --simulate
-
-    # Real link:
-    python gcs.py --port COM7 --baud 9600           # Windows
-    python gcs.py --port /dev/ttyUSB0 --baud 9600   # Linux / macOS
-
-    # Replay a recorded flight at 4x speed:
-    python gcs.py --replay logs/flight_20260916_101500.raw.txt --speed 4
-
-    # Add uplink: type a command in the terminal, it is broadcast to the CanSat
-    python gcs.py --port COM7 --uplink
-
-Requirements
-------------
-    pip install digi-xbee matplotlib numpy
-(digi-xbee is only imported when a real radio is used, so --simulate and
- --replay work on a laptop with nothing plugged in.)
-"""
+"""CanSat Ground Control System - live 3D telemetry tracker."""
 
 from __future__ import annotations
 
@@ -70,7 +20,7 @@ from datetime import datetime, timezone
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from mpl_toolkits.mplot3d.art3d import Line3DCollection  # noqa: F401  (registers 3d)
+from mpl_toolkits.mplot3d.art3d import Line3DCollection  # noqa: F401
 
 # --------------------------------------------------------------------------- #
 # 1. Packet model + parser
@@ -82,26 +32,24 @@ STATE_NAMES = {
 
 
 class ParseError(ValueError):
-    """Raised for any line that is not a valid telemetry packet."""
+    pass
 
 
 @dataclass(frozen=True)
 class TelemetryPacket:
-    timestamp: int            # ms since CanSat boot
-    state: int                # flight state machine
-    temperature: float        # degC
-    pressure: float           # hPa
-    altitude: float           # m
-    battery_voltage: float    # V
-    battery_current: float    # A
-    latitude: float           # deg, +N
-    longitude: float          # deg, +E
-    prev_cmd_echo: str        # last command the CanSat acted on
+    timestamp: int
+    state: int
+    temperature: float
+    pressure: float
+    altitude: float
+    battery_voltage: float
+    battery_current: float
+    latitude: float
+    longitude: float
+    prev_cmd_echo: str
 
-    # (name, converter) in wire order. Driving parse + CSV header off one list
-    # means the format is defined in exactly one place.
     FIELDS = (
-        ("timestamp", lambda s: int(float(s))),   # tolerate "1234.0"
+        ("timestamp", lambda s: int(float(s))),
         ("state", lambda s: int(float(s))),
         ("temperature", float),
         ("pressure", float),
@@ -121,8 +69,6 @@ class TelemetryPacket:
         if len(parts) < n:
             raise ParseError(f"expected {n} fields, got {len(parts)}")
         if len(parts) > n:
-            # The command echo is free text and may itself contain commas,
-            # so fold every extra field back into the last one.
             parts = parts[: n - 1] + [",".join(parts[n - 1:])]
 
         values = {}
@@ -139,7 +85,6 @@ class TelemetryPacket:
         return pkt
 
     def validate(self) -> None:
-        """Physical sanity checks - catches bit-flips that still parse."""
         if not -90.0 <= self.latitude <= 90.0:
             raise ParseError(f"latitude out of range: {self.latitude}")
         if not -180.0 <= self.longitude <= 180.0:
@@ -151,7 +96,6 @@ class TelemetryPacket:
 
     @property
     def has_fix(self) -> bool:
-        """A GPS with no lock usually reports exactly 0,0 - don't plot it."""
         return not (abs(self.latitude) < 1e-7 and abs(self.longitude) < 1e-7)
 
     @property
@@ -171,12 +115,6 @@ class TelemetryPacket:
 # --------------------------------------------------------------------------- #
 
 class LineAssembler:
-    """Turns an arbitrarily chunked byte stream into complete lines.
-
-    RF frames split packets in the middle all the time; without this you get
-    'ValueError: could not convert string to float' for perfectly good data.
-    """
-
     _SPLIT = re.compile(r"[\r\n]+")
 
     def __init__(self, max_buffer: int = 4096):
@@ -185,10 +123,10 @@ class LineAssembler:
 
     def feed(self, text: str) -> list[str]:
         self._buf += text
-        if len(self._buf) > self._max:      # runaway garbage, keep the tail
+        if len(self._buf) > self._max:
             self._buf = self._buf[-self._max:]
         chunks = self._SPLIT.split(self._buf)
-        self._buf = chunks.pop()            # last piece may be incomplete
+        self._buf = chunks.pop()
         return [c for c in chunks if c.strip()]
 
 
@@ -197,8 +135,6 @@ class LineAssembler:
 # --------------------------------------------------------------------------- #
 
 class TelemetrySource:
-    """Common plumbing: every source pushes bytes through the same assembler."""
-
     name = "source"
 
     def __init__(self, on_line):
@@ -206,7 +142,6 @@ class TelemetrySource:
         self._asm = LineAssembler()
 
     def _ingest(self, raw: bytes) -> None:
-        # errors='replace' so one bad byte cannot crash the reader thread.
         for line in self._asm.feed(raw.decode("utf-8", errors="replace")):
             self._on_line(line)
 
@@ -218,8 +153,6 @@ class TelemetrySource:
 
 
 class XBeeSource(TelemetrySource):
-    """Digi XBee3 in transparent/API mode over USB serial."""
-
     name = "XBee3"
 
     def __init__(self, on_line, port: str, baud: int):
@@ -228,7 +161,7 @@ class XBeeSource(TelemetrySource):
         self._device = None
 
     def start(self) -> None:
-        from digi.xbee.devices import XBeeDevice   # imported lazily on purpose
+        from digi.xbee.devices import XBeeDevice
 
         self._device = XBeeDevice(self.port, self.baud)
         self._device.open()
@@ -236,11 +169,10 @@ class XBeeSource(TelemetrySource):
         print(f"[xbee ] open on {self.port} @ {self.baud} "
               f"(local addr {self._device.get_64bit_addr()})")
 
-        # Runs on the library's reader thread -> keep it tiny.
         def _on_message(xbee_message):
             try:
                 self._ingest(bytes(xbee_message.data))
-            except Exception as exc:                       # never let it die
+            except Exception as exc:
                 print(f"[xbee ] callback error: {exc}", file=sys.stderr)
 
         self._device.add_data_received_callback(_on_message)
@@ -256,11 +188,6 @@ class XBeeSource(TelemetrySource):
 
 
 class SimSource(TelemetrySource):
-    """Synthesises a full CanSat flight so the GCS can be demoed/tested
-    without a radio: pad -> ascent -> apogee -> parachute descent -> landing,
-    with wind drift, barometric pressure, a thermal lapse rate, battery sag
-    and (optionally) corrupted packets to exercise the parser."""
-
     name = "simulator"
 
     def __init__(self, on_line, rate=4.0, origin=(12.97160, 77.59460),
@@ -275,7 +202,6 @@ class SimSource(TelemetrySource):
         self._stop = threading.Event()
         self._thread = None
 
-    # --- flight profile ---------------------------------------------------- #
     def _step(self, t: float, dt: float) -> int:
         ascent_rate, descent_rate = 40.0, 7.5
         t_ascent = self.apogee / ascent_rate
@@ -291,7 +217,6 @@ class SimSource(TelemetrySource):
             state, vz, wind = 4, 0.0, 0.0
 
         self.alt = max(0.0, self.alt + vz * dt + random.gauss(0, 0.4))
-        # Wind drift, converted from metres to degrees.
         east = wind * dt * random.uniform(0.6, 1.2)
         north = wind * dt * random.uniform(-0.4, 0.9)
         self.lon += east / (111_320.0 * math.cos(math.radians(self.lat)))
@@ -329,7 +254,6 @@ class SimSource(TelemetrySource):
             line = self._packet(t, state)
             if random.random() < self.error_rate:
                 line = self._corrupt(line)
-            # Emit as bytes, sometimes split in two, exactly like real frames.
             payload = (line + "\n").encode("utf-8", errors="replace")
             if random.random() < 0.25 and len(payload) > 10:
                 cut = random.randrange(4, len(payload) - 4)
@@ -346,15 +270,13 @@ class SimSource(TelemetrySource):
         self._thread.start()
 
     def send(self, text: str) -> None:
-        self._last_cmd = text.strip().upper()[:24]   # echoed in the next packet
+        self._last_cmd = text.strip().upper()[:24]
 
     def stop(self) -> None:
         self._stop.set()
 
 
 class ReplaySource(TelemetrySource):
-    """Replays a .raw.txt log written by a previous run."""
-
     name = "replay"
 
     def __init__(self, on_line, path: str, rate=4.0, speed=1.0):
@@ -372,7 +294,7 @@ class ReplaySource(TelemetrySource):
             if self._stop.is_set():
                 return
             delay = 1.0 / self.rate
-            try:                                   # honour real packet spacing
+            try:
                 ts = int(float(line.split(",")[0]))
                 if prev_ts is not None and 0 <= ts - prev_ts < 10_000:
                     delay = (ts - prev_ts) / 1000.0
@@ -396,9 +318,6 @@ class ReplaySource(TelemetrySource):
 # --------------------------------------------------------------------------- #
 
 class FlightLogger:
-    """Writes the raw stream and the parsed CSV, flushing every packet so a
-    power cut mid-flight costs at most one line."""
-
     def __init__(self, directory: str):
         os.makedirs(directory, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -428,12 +347,7 @@ class FlightLogger:
 
 
 class TelemetryBus:
-    """Thread-safe hand-off between the radio thread and the GUI thread."""
-
     def __init__(self, logger: FlightLogger | None, history: int = 5000):
-        # (arrival_wall_time, line): the arrival time is stamped on the radio
-        # thread, so the reported packet rate is the true RF rate and not an
-        # artefact of how often the GUI happens to drain the queue.
         self._q: queue.Queue[tuple[float, str]] = queue.Queue(maxsize=10_000)
         self._logger = logger
         self.packets: deque[TelemetryPacket] = deque(maxlen=history)
@@ -441,16 +355,14 @@ class TelemetryBus:
         self.rx_bad = 0
         self.last_error = ""
         self.last_rx_wall = None
-        self._recent = deque(maxlen=25)      # arrival times, for packet rate
+        self._recent = deque(maxlen=25)
 
-    # -- called from the radio thread -- #
     def submit(self, line: str) -> None:
         try:
             self._q.put_nowait((time.time(), line))
         except queue.Full:
-            pass                              # GUI stalled; drop, never block RF
+            pass
 
-    # -- called from the GUI thread -- #
     def drain(self) -> int:
         new = 0
         while True:
@@ -493,10 +405,7 @@ class TelemetryBus:
 # --------------------------------------------------------------------------- #
 
 class LivePlot:
-    """X = longitude, Y = latitude, Z = altitude, coloured by altitude, with
-    the ground track projected onto the floor of the box."""
-
-    MIN_DEG_SPAN = 4e-4       # ~45 m, stops the axes collapsing while on the pad
+    MIN_DEG_SPAN = 4e-4
     MIN_ALT_SPAN = 20.0
 
     def __init__(self, bus: TelemetryBus, source: TelemetrySource, interval_ms=200):
@@ -520,8 +429,6 @@ class LivePlot:
                                         linewidth=0.6)
             axis.set_tick_params(labelsize=8, colors="#9fb3c8")
 
-        # Seeded with one degenerate segment: add_collection3d autoscales on
-        # the segment array, and an empty one raises on matplotlib >= 3.9.
         self.trail = Line3DCollection([[(0, 0, 0), (0, 0, 0)]],
                                       cmap="turbo", linewidths=2.2)
         self.trail.set_array(np.zeros(1))
@@ -545,7 +452,6 @@ class LivePlot:
         self._anim = FuncAnimation(self.fig, self._update, interval=interval_ms,
                                    blit=False, cache_frame_data=False)
 
-    # ------------------------------------------------------------------ #
     def _update(self, _frame):
         self.bus.drain()
         pkts = list(self.bus.packets)
@@ -626,8 +532,6 @@ class LivePlot:
 
     @staticmethod
     def _vertical_speed(pkts, window_ms: int = 2000) -> float:
-        """Slope over a fixed time window (not a fixed packet count), so the
-        reading stays sane whether the CanSat sends at 1 Hz or 20 Hz."""
         if len(pkts) < 2:
             return 0.0
         b, a = pkts[-1], pkts[0]
@@ -640,7 +544,6 @@ class LivePlot:
 
     @staticmethod
     def _range_bearing(a: TelemetryPacket, b: TelemetryPacket):
-        """Great-circle distance and initial bearing from first fix to now."""
         r = 6_371_000.0
         p1, p2 = math.radians(a.latitude), math.radians(b.latitude)
         dl = math.radians(b.longitude - a.longitude)
@@ -652,7 +555,6 @@ class LivePlot:
         return dist, (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
 
     def run(self) -> None:
-        # tight_layout fights with 3D axes + a colorbar, so place it manually.
         self.fig.subplots_adjust(left=0.02, right=0.93, top=0.95, bottom=0.04)
         plt.show()
 
@@ -727,7 +629,7 @@ def main(argv=None) -> int:
 
     plot = LivePlot(bus, source, interval_ms=args.interval)
     try:
-        plot.run()                      # blocks until the window is closed
+        plot.run()
     except KeyboardInterrupt:
         pass
     finally:
