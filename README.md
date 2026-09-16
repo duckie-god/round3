@@ -65,3 +65,49 @@ Each run (unless `--no-log`) writes to the log directory:
 
 - Corrupted or out-of-range packets are dropped and counted, never crash the run.
 - Radio I/O runs on a background thread; parsing and plotting happen on the main thread.
+
+
+# Parafoil 6-DOF Dynamics + Autonomous Homing Guidance
+
+Simulates a rigid 6-DOF parafoil (canopy + payload) and steers it to a ground
+target using an energy-management + proportional homing guidance law.
+
+Model is from Zhao, Tao, Sun & Sun, "Dynamic modelling of parafoil system
+based on aerodynamic coefficients identification", Automatika 64:2 (2023).
+Aerodynamic coefficients come from the paper's Tables 1-3; moments of
+inertia aren't published, so representative values are assumed (marked in
+the code).
+
+## Install
+
+```bash
+pip install numpy matplotlib
+```
+
+## Run
+
+```bash
+python3 parafoil_guidance.py
+```
+
+Produces `parafoil_path.png` - a 3D plot of the flight path colored by
+guidance phase, plus a printed landing summary (miss distance, flight time).
+
+## How it works
+
+- **Dynamics**: full nonlinear 6-DOF equations of motion, integrated with RK4.
+- **Guidance**:
+  - **SPIRAL** - if too high to glide directly to the target, hold a
+    constant-deflection turn to bleed altitude.
+  - **HOMING** - once within the reachable glide cone, steer heading
+    proportionally toward the target.
+  - **CAPTURE** - stop steering once within the capture radius.
+- **Bonus utility**: `lla_to_local_xyz()` converts lat/lon/altitude telemetry
+  (e.g. from a CanSat ground station) into the local north/east/down frame
+  the guidance model uses.
+
+## Notes
+
+- Control input is `delta_a`, an asymmetric brake deflection in `[-1, 1]`.
+- No wind estimation or final flare leg - deliberately a simple, complete
+  closed loop, not a flight-ready controller.
