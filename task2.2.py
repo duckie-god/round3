@@ -1,45 +1,4 @@
 #!/usr/bin/env python3
-"""
-Parafoil 6-DOF dynamics + autonomous homing guidance
-=====================================================
-
-Implements the rigid 6-DOF parafoil model of:
-  Zhao, Tao, Sun & Sun, "Dynamic modelling of parafoil system based on
-  aerodynamic coefficients identification", Automatika 64:2, 291-303 (2023).
-
-Equations used (paper eq. numbers in comments):
-  - Coordinate transform Bd-s                         (1)
-  - Translational kinematics  x. = Bd-s^T * Vc         (2)
-  - Rotational kinematics     Euler rates from p,q,r   (3)
-  - Force equation            m(Vc. + W x Vc)=FW+FA    (4),(11)
-  - Moment equation           IT*W. + W x IT*W = MA    (5),(12)
-  - FW, FA, MA, SW, IT                                 (6)-(10)
-
-The aerodynamic-coefficient VALUES used below are taken directly from the
-paper's Table 1 (roll/yaw, identified by RWLS) and Table 3 (lift/drag/pitch).
-The paper does not publish numeric moments of inertia (IXX, IYY, IZZ, IXZ),
-so representative values for a small ram-air canopy + payload of this size
-are assumed (clearly marked ASSUMED below) -- everything else is exactly the
-published model.
-
-On top of the dynamics, a simple "energy management + proportional homing"
-guidance law steers the asymmetric control deflection delta_a:
-  1. SPIRAL phase: if the vehicle is too high for the remaining distance to
-     the target (i.e. it can't glide there at the nominal L/D), hold a
-     constant-deflection turn to bleed off altitude (like a real parafoil's
-     autonomous "energy management" holding pattern).
-  2. HOMING phase: once inside the reachable glide cone, point the nose at
-     the target using proportional heading control on delta_a.
-This is deliberately simple (a real system would add wind estimation, a
-final into-wind flare leg, etc.) but is a complete, working closed loop.
-
-Bonus: `lla_to_local_xyz` converts the lat/lon/altitude stream produced by
-the Question-1 ground station into the local x (north), y (east), z (down)
-frame this guidance algorithm runs in.
-
-Run:  python3 parafoil_guidance.py
-Produces parafoil_path.png (3D path + target) in the working directory.
-"""
 
 from __future__ import annotations
 
